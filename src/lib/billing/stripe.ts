@@ -15,6 +15,33 @@ import {
   CustomerBilling 
 } from './config';
 
+type PeriodItem = { price?: { id?: string } | null };
+type PeriodField = 'current_period_start' | 'current_period_end';
+type PlanItem = (items: PeriodItem[]) => PeriodItem | undefined;
+
+// Typed like the removed field, which was also absent at runtime when Stripe omitted it.
+function subscriptionPeriod(subscription: object, field: PeriodField, planItem?: PlanItem): number {
+  const legacy: unknown = Reflect.get(subscription, field);
+  if (typeof legacy === 'number') return legacy;
+  const list: unknown = Reflect.get(subscription, 'items');
+  const data: unknown = list && typeof list === 'object' ? Reflect.get(list, 'data') : undefined;
+  const items = (Array.isArray(data) ? data : []).filter(
+    (item): item is PeriodItem => typeof item === 'object' && item !== null,
+  );
+  const periods = new Set(items.map((item) => Reflect.get(item, field)));
+  const chosen = periods.size === 1 ? items[0] : planItem?.(items);
+  const value: unknown = chosen ? Reflect.get(chosen, field) : undefined;
+  return (typeof value === 'number' ? value : undefined) as number;
+}
+
+function getSubscriptionPeriodStart(subscription: object, planItem?: PlanItem): number {
+  return subscriptionPeriod(subscription, 'current_period_start', planItem);
+}
+
+function getSubscriptionPeriodEnd(subscription: object, planItem?: PlanItem): number {
+  return subscriptionPeriod(subscription, 'current_period_end', planItem);
+}
+
 // Lazy-initialize Stripe client to avoid build-time errors
 let _stripe: Stripe | null = null;
 
@@ -170,9 +197,9 @@ export async function getCustomerBilling(customerId: string): Promise<CustomerBi
     // Get current period usage
     const now = new Date();
     // @ts-expect-error - Stripe SDK types may vary by version
-    const periodStartTs = subscription?.current_period_start || subscription?.items?.data?.[0]?.current_period_start;
+    const periodStartTs = (subscription == null ? undefined : getSubscriptionPeriodStart(subscription, (items) => items[0])) || subscription?.items?.data?.[0]?.current_period_start;
     // @ts-expect-error - Stripe SDK types may vary by version  
-    const periodEndTs = subscription?.current_period_end || subscription?.items?.data?.[0]?.current_period_end;
+    const periodEndTs = (subscription == null ? undefined : getSubscriptionPeriodEnd(subscription, (items) => items[0])) || subscription?.items?.data?.[0]?.current_period_end;
     const periodStart = periodStartTs 
       ? new Date(periodStartTs * 1000)
       : new Date(now.getFullYear(), now.getMonth(), 1);
